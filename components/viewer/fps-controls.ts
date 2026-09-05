@@ -26,6 +26,13 @@ export interface FpsControlsOptions {
   eyeHeight: number;
   /** Collider mesh to stand on. Null means free-fly. */
   getFloor: () => THREE.Object3D | null;
+  /**
+   * Known ground height in metres, from semantics_metadata. When set we hold
+   * eye height above it directly — raycasting a multi-megabyte collider every
+   * frame is the single most expensive thing this loop could do, and the
+   * ground plane is more accurate than the collider anyway.
+   */
+  groundY?: number | null;
   onLockChange?: (locked: boolean) => void;
   /** Pointer lock was refused (usually Chrome's rate limit). */
   onLockError?: () => void;
@@ -158,6 +165,13 @@ export class FpsControls {
 
     const speed = this.keys.has("ShiftLeft") ? SPRINT_SPEED : WALK_SPEED;
     camera.position.addScaledVector(this.move, speed * dt);
+
+    const { groundY } = this.opts;
+    if (groundY != null) {
+      const t = 1 - Math.exp(-FLOOR_SMOOTHING * dt);
+      camera.position.y += (groundY + eyeHeight - camera.position.y) * t;
+      return;
+    }
 
     const floor = getFloor();
     if (floor) {

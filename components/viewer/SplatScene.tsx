@@ -129,6 +129,8 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
       domElement: renderer.domElement,
       eyeHeight: EYE_HEIGHT,
       getFloor: () => collider,
+      // With metric scale the floor is y=0, so skip the collider raycast.
+      groundY: frame.hasMetricScale ? 0 : null,
       onLockChange: (isLocked) => {
         setLocked(isLocked);
         if (isLocked) setLockHint(false);
@@ -146,6 +148,8 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
 
     let ghost: THREE.Object3D | null = null;
     let ghostAssetId: string | null = null;
+    /** Guards against a slow ghost load landing after the selection moved on. */
+    let ghostToken = 0;
     let yawOffset = 0;
 
     async function loadModel(url: string): Promise<THREE.Object3D> {
@@ -190,59 +194,88 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
       return { point: frame.worldGroup.worldToLocal(worldPoint), yaw: camYaw + Math.PI + yawOffset };
     }
 
+    /**
+     * Distance from a model's origin down to its lowest point. Computed once
+     * per object: yaw doesn't change it, and recomputing a Box3 from geometry
+     * every frame is what made the ghost preview stall the render loop.
+     */
+    function baseOffset(object: THREE.Object3D): number {
+      if (typeof object.userData.baseOffset === "number") return object.userData.baseOffset;
+      object.position.set(0, 0, 0);
+      object.rotation.set(0, 0, 0);
+      object.updateMatrixWorld(true);
+      const offset = -new THREE.Box3().setFromObject(object).min.y;
+      object.userData.baseOffset = offset;
+      return offset;
+    }
+
     /** Sit the model's base on the target rather than trusting its origin. */
     function seat(object: THREE.Object3D, target: { point: THREE.Vector3; yaw: number }) {
-      object.position.copy(target.point);
+      const offset = baseOffset(object);
+      object.position.set(target.point.x, target.point.y + offset, target.point.z);
       object.rotation.y = target.yaw;
-      frame.worldGroup.updateMatrixWorld(true);
-      const bounds = new THREE.Box3().setFromObject(object);
-      object.position.y += target.point.y - bounds.min.y;
     }
 
-    function disposeGhost() {
-      if (!ghost) return;
-      frame.worldGroup.remove(ghost);
-      ghost.traverse((child) => {
-        const mesh = child as THREE.Mesh;
-        const mat = mesh.material;
-        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-        else mat?.dispose();
-      });
-      ghost = null;
-      ghostAssetId = null;
-    }
-
-    /** Translucent preview so placement is predictable instead of a surprise. */
-    async function syncGhost() {
-      const asset = selectedAssetRef.current;
-      if (!asset) {
-        disposeGhost();
-        return;
-      }
-      if (ghostAssetId !== asset.id) {
-        disposeGhost();
-        ghostAssetId = asset.id;
-        const preview = await loadModel(asset.url);
-        // Selection may have changed while the model loaded.
-        if (selectedAssetRef.current?.id !== asset.id) return;
-        preview.traverse((child) => {
-          const mesh = child as THREE.Mesh;
-          if (!mesh.material) return;
-          const clone = (m: THREE.Material) => {
-            const c = m.clone();
-            c.transparent = true;
-            c.opacity = 0.45;
-            c.depthWrite = false;
-            return c;
-          };
-          mesh.material = Array.isArray(mesh.material)
-            ? mesh.material.map(clone)
-            : clone(mesh.material);
+    /**
+     * Sweep every ghost out of the scene, not just the one `ghost` points at.
+     * A ghost whose load resolved after the selection changed is orphaned —
+     * still in the scene, no longer referenced — and stacking those translucent
+     * copies is what turns furniture into a pile of outlines.
+     */
+    function removeGhosts() {
+      for (const child of [...frame.worldGroup.children]) {
+        if (!child.userData.isGhost) continue;
+        frame.worldGroup.remove(child);
+        child.traverse((node) => {
+          const mesh = node as THREE.Mesh;
+          const mat = mesh.material;
+          if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+          else mat?.dispose();
         });
-        ghost = preview;
-        frame.worldGroup.add(preview);
       }
-      if (!ghost) return;
+      ghost = null;
+    }
+
+    function makeTranslucent(object: THREE.Object3D) {
+      object.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        if (!mesh.material) return;
+        const soften = (m: THREE.Material) => {
+          const c = m.clone();
+          c.transparent = true;
+          c.opacity = 0.4;
+          c.depthWrite = false;
+          return c;
+        };
+        mesh.material = Array.isArray(mesh.material)
+          ? mesh.material.map(soften)
+          : soften(mesh.material);
+      });
+    }
+
+    /** Called only when the selection actually changes, never per frame. */
+    async function setGhostAsset(asset: FurnitureAsset | null) {
+      const token = ++ghostToken;
+      removeGhosts();
+      ghostAssetId = asset?.id ?? null;
+      if (!asset) return;
+
+      const preview = await loadModel(asset.url);
+      if (token !== ghostToken) return; // selection moved on while loading
+      makeTranslucent(preview);
+      preview.userData.isGhost = true;
+      ghost = preview;
+      frame.worldGroup.add(preview);
+    }
+
+    // Raycasting the collider is expensive, so the preview refreshes on an
+    // interval rather than every frame. 20/sec still tracks the crosshair.
+    let lastGhostSync = 0;
+    function syncGhost(now: number) {
+      const asset = selectedAssetRef.current;
+      if ((asset?.id ?? null) !== ghostAssetId) void setGhostAsset(asset);
+      if (!ghost || now - lastGhostSync < 50) return;
+      lastGhostSync = now;
       const target = computeTarget();
       ghost.visible = target !== null;
       if (target) seat(ghost, target);
@@ -280,7 +313,7 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
     function clearSelection() {
       selectedAssetRef.current = null;
       setSelectedId(null);
-      disposeGhost();
+      removeGhosts();
     }
 
     function onKey(e: KeyboardEvent) {
@@ -333,14 +366,14 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
       const dt = Math.min((now - last) / 1000, 0.1);
       last = now;
       controls.update(dt);
-      void syncGhost();
+      syncGhost(now);
       renderer.render(scene, camera);
     });
 
     if (process.env.NODE_ENV !== "production") {
       Object.assign(window, {
         THREE, scene, camera, renderer, spark, splats, frame, controls,
-        placeAtCrosshair, selectedAssetRef, computeTarget,
+        placeAtCrosshair, selectedAssetRef, computeTarget, syncGhost,
       });
     }
 
@@ -350,7 +383,7 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
       renderer.domElement.removeEventListener("click", onClick);
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKey);
-      disposeGhost();
+      removeGhosts();
       controls.dispose();
       controlsRef.current = null;
       observer.disconnect();
