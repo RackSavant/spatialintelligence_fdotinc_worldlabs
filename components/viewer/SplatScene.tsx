@@ -17,10 +17,12 @@ export interface SplatSceneProps {
   spzUrl: string;
   /** Marble assets.mesh.collider_mesh_url — floor probe and placement target. */
   colliderUrl?: string;
+  /** Marble assets.imagery.pano_url — lights the furniture with the real room. */
+  panoUrl?: string;
   semantics?: WorldSemantics;
 }
 
-export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatSceneProps) {
+export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: SplatSceneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [progress, setProgress] = useState(0);
   const [ready, setReady] = useState(false);
@@ -47,6 +49,27 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
 
     const spark = new SparkRenderer({ renderer });
     scene.add(spark);
+
+    // Splats carry their own colour and need no lighting, but GLB furniture uses
+    // PBR materials — with no light and no environment those render pure black,
+    // which reads as a broken model rather than an unlit one.
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x404040, 2.0));
+    const key = new THREE.DirectionalLight(0xffffff, 1.2);
+    key.position.set(3, 6, 2);
+    scene.add(key);
+
+    // The world's own panorama is the most honest environment we have: it makes
+    // reflections and ambient tint match the room the furniture is standing in.
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    let envTarget: THREE.WebGLRenderTarget | null = null;
+    if (panoUrl) {
+      new THREE.TextureLoader().load(panoUrl, (texture) => {
+        texture.mapping = THREE.EquirectangularReflectionMapping;
+        envTarget = pmrem.fromEquirectangular(texture);
+        scene.environment = envTarget.texture;
+        texture.dispose();
+      });
+    }
 
     const frame = createWorldFrame(
       semantics ?? { metricScaleFactor: null, groundPlaneOffset: null },
@@ -192,7 +215,7 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
     /** Translucent preview so placement is predictable instead of a surprise. */
     async function syncGhost() {
       const asset = selectedAssetRef.current;
-      if (!asset || !controls.locked) {
+      if (!asset) {
         disposeGhost();
         return;
       }
@@ -261,7 +284,7 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
     }
 
     function onKey(e: KeyboardEvent) {
-      if (!controls.locked) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (e.code === "KeyE") void placeAtCrosshair();
       else if (e.code === "KeyQ") clearSelection();
       else if (e.code === "KeyZ") undoPlacement();
@@ -271,12 +294,25 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
     }
     window.addEventListener("keydown", onKey);
 
-    function onClick() {
-      // First click captures the mouse. After that a click only places when a
-      // piece is actually selected, so walking never drops furniture by accident.
+    // Distinguish a click from a look-drag, or dragging the view would drop
+    // furniture every time you released the mouse.
+    let pressAt: { x: number; y: number } | null = null;
+    const onPointerDown = (e: PointerEvent) => (pressAt = { x: e.clientX, y: e.clientY });
+
+    function onClick(e: MouseEvent) {
+      const moved = pressAt
+        ? Math.hypot(e.clientX - pressAt.x, e.clientY - pressAt.y)
+        : 0;
+      pressAt = null;
+      if (moved > 5) return;
+
+      // Capture the mouse if we can — but placement must never depend on it.
+      // requestPointerLock only works from a user gesture and Chrome rate-limits
+      // it, so gating placement behind the lock made placing impossible.
       if (!controls.locked) controls.requestLock();
-      else if (selectedAssetRef.current) void placeAtCrosshair();
+      if (selectedAssetRef.current) void placeAtCrosshair();
     }
+    renderer.domElement.addEventListener("pointerdown", onPointerDown);
     renderer.domElement.addEventListener("click", onClick);
 
     const resize = () => {
@@ -312,6 +348,7 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
       cancelled = true;
       renderer.setAnimationLoop(null);
       renderer.domElement.removeEventListener("click", onClick);
+      renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKey);
       disposeGhost();
       controls.dispose();
@@ -328,16 +365,18 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
       });
       modelCache.clear();
       splats.dispose();
+      envTarget?.dispose();
+      pmrem.dispose();
       renderer.dispose();
       host.removeChild(renderer.domElement);
     };
-  }, [spzUrl, colliderUrl, semantics]);
+  }, [spzUrl, colliderUrl, panoUrl, semantics]);
 
   return (
     <div className="relative h-full w-full bg-black">
       <div ref={hostRef} className="h-full w-full [&>canvas]:block" />
 
-      {ready && locked && (
+      {ready && (locked || selectedId) && (
         <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
           <div className="h-4 w-px bg-white/70 absolute left-1/2 -translate-x-1/2 -top-2" />
           <div className="w-4 h-px bg-white/70 absolute top-1/2 -translate-y-1/2 -left-2" />
@@ -350,7 +389,7 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
         </div>
       )}
 
-      {ready && !locked && (
+      {ready && !locked && !selectedId && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center">
           <p className="rounded bg-black/70 px-4 py-2 font-mono text-sm text-white">
             {lockHint ? "wait a moment, then click again — or drag to look" : "click to walk"}
@@ -359,14 +398,14 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
       )}
 
       <div className="pointer-events-none absolute bottom-3 left-3 font-mono text-xs text-white/70 [text-shadow:0_1px_2px_#000]">
-        {!locked
-          ? "click to walk · or drag to look"
-          : selectedId
-            ? "placing · click or E to drop · R rotate · Z undo · Q to stop placing"
-            : "walking · WASD move · shift sprint · esc to release · pick furniture below to place"}
+        {selectedId
+          ? "placing · click or E to drop · R rotate · Z undo · Q to stop placing"
+          : locked
+            ? "walking · WASD move · shift sprint · esc to release"
+            : "click to capture the mouse · WASD to move · drag to look"}
       </div>
 
-      {locked && selectedId && (
+      {selectedId && (
         <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded bg-green-400/90 px-3 py-1 font-mono text-xs text-black">
           placing — Q to stop
         </div>
@@ -387,8 +426,10 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
         onOpenChange={(isOpen) => {
           // The drawer needs the cursor; closing it should return you to walking
           // rather than making you click through a lock request again.
+          // Don't re-request pointer lock here: this runs from an effect, not a
+          // user gesture, so the browser refuses it and the refusal burns the
+          // rate-limit window that the user's next real click needs.
           if (isOpen && document.pointerLockElement) document.exitPointerLock();
-          else if (!isOpen) controlsRef.current?.requestLock();
         }}
       />
     </div>
