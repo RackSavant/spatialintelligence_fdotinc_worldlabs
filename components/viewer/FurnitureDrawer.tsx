@@ -14,6 +14,9 @@ export interface FurnitureAsset {
 }
 
 interface Props {
+  assets: FurnitureAsset[];
+  /** Re-fetch after an upload or seed; the list is owned by the scene. */
+  onRefresh: () => Promise<void> | void;
   selectedId: string | null;
   onSelect: (asset: FurnitureAsset | null) => void;
   /** Drawer steals the mouse, so the viewer releases pointer lock while open. */
@@ -36,22 +39,22 @@ async function measure(bytes: Uint8Array): Promise<{ x: number; y: number; z: nu
   }
 }
 
-export function FurnitureDrawer({ selectedId, onSelect, onOpenChange }: Props) {
+export function FurnitureDrawer({
+  assets,
+  onRefresh,
+  selectedId,
+  onSelect,
+  onOpenChange,
+}: Props) {
   const [open, setOpen] = useState(false);
-  const [assets, setAssets] = useState<FurnitureAsset[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
-    const res = await fetch("/api/assets");
-    if (res.ok) setAssets((await res.json()).assets);
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    await onRefresh();
+  }, [onRefresh]);
 
   useEffect(() => {
     onOpenChange?.(open);

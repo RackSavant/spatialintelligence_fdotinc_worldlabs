@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { createWorldFrame, type WorldSemantics } from "@/lib/world-frame";
 import { FpsControls } from "./fps-controls";
 import { FurnitureDrawer, type FurnitureAsset } from "./FurnitureDrawer";
+import { Hotbar } from "./Hotbar";
 
 /** Standing eye height in metres; worlds are metric with the ground at y=0. */
 const EYE_HEIGHT = 1.6;
@@ -32,10 +33,58 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
   const [lockHint, setLockHint] = useState(false);
   const [holding, setHolding] = useState(false);
   const [hovering, setHovering] = useState(false);
+  const [assets, setAssets] = useState<FurnitureAsset[]>([]);
   // A ref, not state: the scene effect must not tear down when the selection
   // changes, so the click handler reads the current value instead.
   const selectedAssetRef = useRef<FurnitureAsset | null>(null);
   const controlsRef = useRef<FpsControls | null>(null);
+
+  const refreshAssets = useCallback(async () => {
+    const res = await fetch("/api/assets");
+    if (res.ok) setAssets((await res.json()).assets);
+  }, []);
+
+  useEffect(() => {
+    void refreshAssets();
+  }, [refreshAssets]);
+
+  const selectAsset = useCallback((asset: FurnitureAsset | null) => {
+    selectedAssetRef.current = asset;
+    setSelectedId(asset?.id ?? null);
+  }, []);
+
+  /**
+   * Hotbar bindings live in their own effect so they always see the current
+   * asset list — the scene effect's closure would go stale after an upload.
+   */
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const match = /^Digit([0-9])$/.exec(e.code);
+      if (!match) return;
+      const slot = Number(match[1]);
+      // 0 clears, so you can drop out of placing without reaching for the drawer.
+      selectAsset(slot === 0 ? null : (assets[slot - 1] ?? null));
+      e.preventDefault();
+    }
+
+    function onWheel(e: WheelEvent) {
+      if (assets.length === 0) return;
+      const current = assets.findIndex((a) => a.id === selectedAssetRef.current?.id);
+      const next = (current + (e.deltaY > 0 ? 1 : -1) + assets.length + 1) % (assets.length + 1);
+      // The extra slot past the end is "nothing selected", so scrolling can
+      // cycle back to plain walking rather than always holding furniture.
+      selectAsset(next === assets.length ? null : assets[next]);
+      e.preventDefault();
+    }
+
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("wheel", onWheel);
+    };
+  }, [assets, selectAsset]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -549,8 +598,8 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
             : hovering
               ? "click to pick this up · WASD to move"
               : locked
-                ? "walking · WASD move · shift sprint · esc to release"
-                : "click to capture the mouse · WASD to move · drag to look"}
+                ? "walking · WASD move · shift sprint · 1-9 pick furniture · scroll to cycle"
+                : "click to capture the mouse · WASD to move · 1-9 pick furniture"}
       </div>
 
       {(selectedId || holding) && (
@@ -565,12 +614,13 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
         </div>
       )}
 
+      <Hotbar assets={assets} selectedId={selectedId} onSelect={selectAsset} />
+
       <FurnitureDrawer
+        assets={assets}
+        onRefresh={refreshAssets}
         selectedId={selectedId}
-        onSelect={(asset) => {
-          selectedAssetRef.current = asset;
-          setSelectedId(asset?.id ?? null);
-        }}
+        onSelect={selectAsset}
         onOpenChange={(isOpen) => {
           // The drawer needs the cursor; closing it should return you to walking
           // rather than making you click through a lock request again.
