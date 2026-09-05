@@ -6,6 +6,9 @@ import { SparkControls, SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { createWorldFrame, type WorldSemantics } from "@/lib/world-frame";
 
+/** Standing eye height in metres; worlds are metric with the ground at y=0. */
+const EYE_HEIGHT = 1.6;
+
 export interface SplatSceneProps {
   spzUrl: string;
   /** Marble assets.mesh.collider_mesh_url — the placement raycast target. */
@@ -52,19 +55,31 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
     });
     frame.contentGroup.add(splats);
 
-    // Fixed camera guesses don't survive worlds of unknown extent, so frame
-    // the real bounds once the splats resolve.
-    camera.position.set(0, 1.6, 3);
+    camera.position.set(0, EYE_HEIGHT, 0);
     splats.initialized.then(() => {
       setReady(true);
       frame.worldGroup.updateMatrixWorld(true);
       const box = splats.getBoundingBox(true).applyMatrix4(splats.matrixWorld);
       if (box.isEmpty()) return;
       const center = box.getCenter(new THREE.Vector3());
-      const radius = box.getSize(new THREE.Vector3()).length() * 0.5;
-      const dist = radius / Math.tan((camera.fov * Math.PI) / 360);
-      camera.position.set(center.x, center.y, center.z + dist * 1.2);
-      camera.lookAt(center);
+
+      if (frame.hasMetricScale) {
+        // A Marble world is an interior you stand in, not an object you orbit.
+        // Framing its bounding sphere would put the camera outside the walls.
+        // Marble renders the panorama from the origin, so that is the least
+        // distorted place to start; fall back to the box centre if the world
+        // doesn't actually straddle the origin.
+        const x = box.min.x < 0 && box.max.x > 0 ? 0 : center.x;
+        const z = box.min.z < 0 && box.max.z > 0 ? 0 : center.z;
+        camera.position.set(x, EYE_HEIGHT, z);
+        camera.lookAt(x, EYE_HEIGHT, z - 1); // horizontal, not tilted at the centroid
+      } else {
+        // Unknown scale — treat it as an object and frame it from outside.
+        const radius = box.getSize(new THREE.Vector3()).length() * 0.5;
+        const dist = radius / Math.tan((camera.fov * Math.PI) / 360);
+        camera.position.set(center.x, center.y, center.z + dist * 1.2);
+        camera.lookAt(center);
+      }
     });
 
     let collider: THREE.Object3D | null = null;
