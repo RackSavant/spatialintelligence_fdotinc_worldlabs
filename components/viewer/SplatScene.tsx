@@ -2,16 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
-import { SparkControls, SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
+import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { createWorldFrame, type WorldSemantics } from "@/lib/world-frame";
+import { FpsControls } from "./fps-controls";
+import { FurnitureDrawer, type FurnitureAsset } from "./FurnitureDrawer";
 
 /** Standing eye height in metres; worlds are metric with the ground at y=0. */
 const EYE_HEIGHT = 1.6;
 
 export interface SplatSceneProps {
   spzUrl: string;
-  /** Marble assets.mesh.collider_mesh_url — the placement raycast target. */
+  /** Marble assets.mesh.collider_mesh_url — floor probe and placement target. */
   colliderUrl?: string;
   semantics?: WorldSemantics;
 }
@@ -20,14 +22,19 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
   const hostRef = useRef<HTMLDivElement>(null);
   const [progress, setProgress] = useState(0);
   const [ready, setReady] = useState(false);
+  const [locked, setLocked] = useState(false);
   const [warning, setWarning] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // A ref, not state: the scene effect must not tear down when the selection
+  // changes, so the click handler reads the current value instead.
+  const selectedAssetRef = useRef<FurnitureAsset | null>(null);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 1000);
+    const camera = new THREE.PerspectiveCamera(70, 1, 0.01, 1000);
 
     // antialias:false is deliberate — MSAA does nothing for splats and costs a lot.
     const renderer = new THREE.WebGLRenderer({ antialias: false });
@@ -42,7 +49,7 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
     );
     scene.add(frame.worldGroup);
     if (!frame.hasMetricScale) {
-      setWarning("No metric scale from Marble — furniture sizing is approximate.");
+      setWarning("No metric scale from Marble — sizing and walk speed are approximate.");
     }
 
     const splats = new SplatMesh({
@@ -66,13 +73,10 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
       if (frame.hasMetricScale) {
         // A Marble world is an interior you stand in, not an object you orbit.
         // Framing its bounding sphere would put the camera outside the walls.
-        // Marble renders the panorama from the origin, so that is the least
-        // distorted place to start; fall back to the box centre if the world
-        // doesn't actually straddle the origin.
         const x = box.min.x < 0 && box.max.x > 0 ? 0 : center.x;
         const z = box.min.z < 0 && box.max.z > 0 ? 0 : center.z;
         camera.position.set(x, EYE_HEIGHT, z);
-        camera.lookAt(x, EYE_HEIGHT, z - 1); // horizontal, not tilted at the centroid
+        camera.lookAt(x, EYE_HEIGHT, z - 1);
       } else {
         // Unknown scale — treat it as an object and frame it from outside.
         const radius = box.getSize(new THREE.Vector3()).length() * 0.5;
@@ -93,36 +97,68 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
       });
     }
 
-    // Click-to-place. Raycasts the collider (clean geometry, stable normals)
-    // and falls back to the splats (fuzzy surface, noisy normals) when absent.
+    const controls = new FpsControls({
+      camera,
+      domElement: renderer.domElement,
+      eyeHeight: EYE_HEIGHT,
+      getFloor: () => collider,
+      onLockChange: setLocked,
+    });
+
+    // Placement raycasts the collider (clean geometry, stable normals) and
+    // falls back to the splats (fuzzy surface, noisy normals) when absent.
     const raycaster = new THREE.Raycaster();
-    const pointer = new THREE.Vector2();
     const placed: THREE.Object3D[] = [];
+    const gltfLoader = new GLTFLoader();
+    const modelCache = new Map<string, THREE.Object3D>();
 
-    function onClick(ev: MouseEvent) {
-      const rect = renderer.domElement.getBoundingClientRect();
-      pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
-      pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera(pointer, camera);
+    async function loadModel(url: string): Promise<THREE.Object3D> {
+      let template = modelCache.get(url);
+      if (!template) {
+        template = (await gltfLoader.loadAsync(url)).scene;
+        modelCache.set(url, template);
+      }
+      return template.clone(true);
+    }
 
-      const target = collider ?? splats;
+    async function placeAtCrosshair() {
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
       const hits: THREE.Intersection[] = [];
-      raycaster.intersectObject(target, true, hits);
+      raycaster.intersectObject(collider ?? splats, true, hits);
       if (!hits.length) return;
 
-      // A 0.5m cube proves the metric pipeline before the GLB catalog exists.
-      const box = new THREE.Mesh(
-        new THREE.BoxGeometry(0.5, 0.5, 0.5),
-        new THREE.MeshBasicMaterial({ color: 0x4ade80 }),
-      );
-      box.position.copy(frame.worldGroup.worldToLocal(hits[0].point.clone()));
-      box.position.y += 0.25; // sit on the surface, not centred in it
-      frame.worldGroup.add(box);
-      placed.push(box);
+      const point = frame.worldGroup.worldToLocal(hits[0].point.clone());
+      const asset = selectedAssetRef.current;
+
+      const object = asset
+        ? await loadModel(asset.url)
+        : // A 0.5m cube stands in when nothing is selected.
+          new THREE.Mesh(
+            new THREE.BoxGeometry(0.5, 0.5, 0.5),
+            new THREE.MeshBasicMaterial({ color: 0x4ade80 }),
+          );
+
+      object.position.copy(point);
+      // Face the viewer, yaw only — a tipped-over sofa reads as a bug.
+      object.rotation.y = new THREE.Euler().setFromQuaternion(camera.quaternion, "YXZ").y;
+      frame.worldGroup.add(object);
+
+      // Models are authored with the origin anywhere; sit the base on the
+      // surface rather than trusting it to be at the model's feet.
+      object.updateMatrixWorld(true);
+      const bounds = new THREE.Box3().setFromObject(object);
+      const localMinY = frame.worldGroup.worldToLocal(bounds.min.clone()).y;
+      object.position.y += point.y - localMinY;
+
+      placed.push(object);
+    }
+
+    function onClick() {
+      // First click captures the mouse; clicks after that place at the crosshair.
+      if (!controls.locked) controls.requestLock();
+      else void placeAtCrosshair();
     }
     renderer.domElement.addEventListener("click", onClick);
-
-    const controls = new SparkControls({ canvas: renderer.domElement });
 
     const resize = () => {
       const { clientWidth: w, clientHeight: h } = host;
@@ -135,12 +171,16 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
     const observer = new ResizeObserver(resize);
     observer.observe(host);
 
+    let last = performance.now();
     renderer.setAnimationLoop(() => {
-      controls.update(camera);
+      const now = performance.now();
+      // Clamp dt so a backgrounded tab doesn't teleport you on return.
+      const dt = Math.min((now - last) / 1000, 0.1);
+      last = now;
+      controls.update(dt);
       renderer.render(scene, camera);
     });
 
-    // Dev-only handles for poking at the scene from the browser console.
     if (process.env.NODE_ENV !== "production") {
       Object.assign(window, { THREE, scene, camera, renderer, spark, splats, frame, controls });
     }
@@ -149,12 +189,18 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
       cancelled = true;
       renderer.setAnimationLoop(null);
       renderer.domElement.removeEventListener("click", onClick);
+      controls.dispose();
       observer.disconnect();
       placed.forEach((p) => {
-        const m = p as THREE.Mesh;
-        m.geometry?.dispose();
-        (m.material as THREE.Material)?.dispose();
+        p.traverse((child) => {
+          const m = child as THREE.Mesh;
+          m.geometry?.dispose();
+          const mat = m.material;
+          if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
+          else mat?.dispose();
+        });
       });
+      modelCache.clear();
       splats.dispose();
       renderer.dispose();
       host.removeChild(renderer.domElement);
@@ -164,19 +210,53 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
   return (
     <div className="relative h-full w-full bg-black">
       <div ref={hostRef} className="h-full w-full [&>canvas]:block" />
+
+      {ready && locked && (
+        <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+          <div className="h-4 w-px bg-white/70 absolute left-1/2 -translate-x-1/2 -top-2" />
+          <div className="w-4 h-px bg-white/70 absolute top-1/2 -translate-y-1/2 -left-2" />
+        </div>
+      )}
+
       {!ready && (
         <div className="absolute inset-0 grid place-items-center font-mono text-sm text-white">
           loading splat… {progress > 0 ? `${progress}%` : ""}
         </div>
       )}
+
+      {ready && !locked && (
+        <div className="pointer-events-none absolute inset-0 grid place-items-center">
+          <p className="rounded bg-black/70 px-4 py-2 font-mono text-sm text-white">
+            click to walk
+          </p>
+        </div>
+      )}
+
       <div className="pointer-events-none absolute bottom-3 left-3 font-mono text-xs text-white/70 [text-shadow:0_1px_2px_#000]">
-        WASD / arrows to move · drag to look · click to place
+        {locked
+          ? `WASD to move · shift to sprint · mouse to look · click to place${
+              selectedId ? "" : " a marker"
+            } · esc to release`
+          : "click to capture the mouse · or drag to look"}
       </div>
+
       {warning && (
         <div className="pointer-events-none absolute top-3 left-3 rounded bg-amber-500/90 px-2 py-1 font-mono text-xs text-black">
           {warning}
         </div>
       )}
+
+      <FurnitureDrawer
+        selectedId={selectedId}
+        onSelect={(asset) => {
+          selectedAssetRef.current = asset;
+          setSelectedId(asset?.id ?? null);
+        }}
+        onOpenChange={(isOpen) => {
+          // The drawer needs the cursor back.
+          if (isOpen && document.pointerLockElement) document.exitPointerLock();
+        }}
+      />
     </div>
   );
 }
