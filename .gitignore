@@ -8,3 +8,12 @@ tsconfig.tsbuildinfo
 public/uploads/
 public/worlds/*
 !public/worlds/.gitkeep
+
+# hackathon pipeline
+.venv/
+out/
+.DS_Store
+*.log
+/*.MOV
+/*.mov
+/*.mp4

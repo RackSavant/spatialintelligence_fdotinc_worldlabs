@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "viewer",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd /Users/dmt/Documents/spatialintelligence_fdotinc_worldlabs/viewer && exec python3 -m http.server 8787 --bind 127.0.0.1"],
+      "port": 8787
+    }
+  ]
+}

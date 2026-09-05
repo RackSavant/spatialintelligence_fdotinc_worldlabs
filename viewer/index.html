@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>horses-lot collider</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0b0d10; color: #e6e9ee; font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  canvas { display: block; }
+  #ui { position: fixed; top: 12px; left: 12px; display: flex; flex-direction: column; gap: 8px; background: rgba(12,14,18,.82); border: 1px solid #2a2f38; border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(6px); max-width: 300px; }
+  #ui h1 { font-size: 13px; margin: 0 0 2px; font-weight: 600; letter-spacing: .02em; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  button { background: #1a1f27; color: #e6e9ee; border: 1px solid #343b47; border-radius: 7px; padding: 5px 9px; cursor: pointer; font: inherit; }
+  button:hover { background: #232a34; }
+  button.on { background: #2f6fed; border-color: #2f6fed; color: #fff; }
+  #stats { color: #9aa4b2; font-variant-numeric: tabular-nums; white-space: pre; }
+  #status { color: #ffd166; min-height: 1.2em; }
+  kbd { background: #1a1f27; border: 1px solid #343b47; border-radius: 4px; padding: 0 4px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@sparkjsdev/spark": "https://cdn.jsdelivr.net/npm/@sparkjsdev/spark@2.1.0/dist/spark.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="ui">
+  <h1>horses-lot_collider.glb</h1>
+  <div class="row">
+    <button id="bSolid" class="on">Solid</button>
+    <button id="bWire" class="on">Wireframe</button>
+    <button id="bSplat">Load splat</button>
+  </div>
+  <div class="row">
+    <button id="bFlip" class="on">Flip Y/Z</button>
+    <button id="bFit">Fit view</button>
+    <button id="bOrigin">Camera at origin</button>
+  </div>
+  <div id="stats">loading…</div>
+  <div id="status"></div>
+  <div style="color:#9aa4b2">Drag to orbit · wheel to zoom · right-drag to pan</div>
+</div>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+const COLLIDER_URL = "assets/horses-lot_collider.glb";
+const SPLAT_URL = "assets/horses-lot_500k.spz";
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0d10);
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.05, 2000);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+const root = new THREE.Group();           // everything lives here so we can flip the frame
+root.rotation.x = Math.PI;                // Marble exports are y-down; flip to y-up like Spark's examples do
+scene.add(root);
+scene.add(new THREE.HemisphereLight(0xcfd8e6, 0x2b2f36, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4); sun.position.set(30, 60, 20); scene.add(sun);
+const grid = new THREE.GridHelper(200, 40, 0x334, 0x223); grid.material.transparent = true; grid.material.opacity = 0.35; root.add(grid);
+root.add(new THREE.AxesHelper(3));
+
+const $ = (id) => document.getElementById(id);
+const status = (m) => { $("status").textContent = m; };
+
+let solidMat = new THREE.MeshStandardMaterial({ color: 0x4f7cff, roughness: 0.85, metalness: 0.0, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
+let wireMat  = new THREE.MeshBasicMaterial({ color: 0x9ec5ff, wireframe: true, transparent: true, opacity: 0.35 });
+const solidGroup = new THREE.Group(), wireGroup = new THREE.Group();
+root.add(solidGroup, wireGroup);
+let bounds = new THREE.Box3();
+
+new GLTFLoader().load(COLLIDER_URL, (gltf) => {
+  let verts = 0, tris = 0;
+  gltf.scene.traverse((o) => {
+    if (!o.isMesh) return;
+    verts += o.geometry.attributes.position.count;
+    tris += (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3;
+    o.geometry.computeVertexNormals();
+    const s = o.clone(); s.material = solidMat; solidGroup.add(s);
+    const w = o.clone(); w.material = wireMat; wireGroup.add(w);
+  });
+  bounds.setFromObject(solidGroup);
+  const size = bounds.getSize(new THREE.Vector3()), c = bounds.getCenter(new THREE.Vector3());
+  $("stats").textContent =
+    `vertices  ${verts.toLocaleString()}\ntriangles ${Math.round(tris).toLocaleString()}\n` +
+    `size      ${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)}\n` +
+    `center    ${c.x.toFixed(1)}, ${c.y.toFixed(1)}, ${c.z.toFixed(1)}`;
+  fitView();
+}, undefined, (e) => status("failed to load collider: " + e.message));
+
+function fitView() {
+  if (!solidGroup.children.length) return;
+  bounds.setFromObject(solidGroup);      // world-space, so it respects the flip
+  const size = bounds.getSize(new THREE.Vector3()), c = bounds.getCenter(new THREE.Vector3());
+  const r = Math.max(size.x, size.y, size.z) * 0.6;
+  camera.position.set(c.x + r * 0.9, c.y + r * 0.8, c.z + r * 0.9);
+  controls.target.copy(c); controls.update();
+}
+function cameraAtOrigin() {
+  camera.position.set(0, 0, 0.01); controls.target.set(0, 0, -5); controls.update();
+}
+
+// --- optional splat overlay (Spark) ---
+let splat = null, spark = null;
+async function loadSplat() {
+  if (splat) { splat.visible = !splat.visible; $("bSplat").classList.toggle("on", splat.visible); return; }
+  status("loading splat…");
+  try {
+    const { SplatMesh, SparkRenderer } = await import("@sparkjsdev/spark");
+    spark = new SparkRenderer({ renderer }); scene.add(spark);
+    splat = new SplatMesh({ url: SPLAT_URL });
+    root.add(splat);
+    await splat.initialized;
+    status(""); $("bSplat").classList.add("on"); $("bSplat").textContent = "Splat";
+  } catch (e) { status("splat failed: " + e.message); console.error(e); }
+}
+
+$("bSolid").onclick = (e) => { solidGroup.visible = !solidGroup.visible; e.target.classList.toggle("on", solidGroup.visible); };
+$("bWire").onclick  = (e) => { wireGroup.visible = !wireGroup.visible; e.target.classList.toggle("on", wireGroup.visible); };
+$("bSplat").onclick = loadSplat;
+$("bFlip").onclick  = (e) => { root.rotation.x = root.rotation.x ? 0 : Math.PI; e.target.classList.toggle("on", !!root.rotation.x); };
+$("bFit").onclick = fitView;
+$("bOrigin").onclick = cameraAtOrigin;
+
+addEventListener("resize", () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+</script>
+</body>
+</html>
