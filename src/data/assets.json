@@ -5,5 +5,26 @@
     "path": "assets/models/nude-crisscross-stiletto/Nude-Crisscross-Stiletto-Retopo.fbx",
     "thumbnail": "assets/models/nude-crisscross-stiletto/textures/texture-9091f555a893-9091f555a893.png",
     "tags": ["fashion", "shoes", "stiletto"]
+  },
+  {
+    "id": "olive-velvet-lounge-chair",
+    "name": "Olive Velvet Lounge Chair",
+    "path": "assets/models/olive-velvet-lounge-chair/olive-velvet-lounge-chair.glb",
+    "thumbnail": "",
+    "tags": ["furniture", "chair", "lounge"]
+  },
+  {
+    "id": "grey-plastic-sled-chair",
+    "name": "Grey Plastic Sled Chair",
+    "path": "assets/models/grey-plastic-sled-chair/grey-plastic-sled-chair.glb",
+    "thumbnail": "",
+    "tags": ["furniture", "chair"]
+  },
+  {
+    "id": "cream-bowl-coffee-table",
+    "name": "Cream Bowl Coffee Table",
+    "path": "assets/models/cream-bowl-coffee-table/cream-bowl-coffee-table.glb",
+    "thumbnail": "",
+    "tags": ["furniture", "table", "coffee"]
   }
 ]
