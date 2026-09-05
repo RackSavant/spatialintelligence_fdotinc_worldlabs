@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "marble-developer-api": {
+      "source": "worldlabsai/marble-developer-api-skill",
+      "sourceType": "github",
+      "skillPath": "skills/marble-developer-api/SKILL.md",
+      "computedHash": "f805410a144bb3d3da7a9649e8921aa3fb8ffe4f2980571d2cf662bb732e2920"
+    }
+  }
+}

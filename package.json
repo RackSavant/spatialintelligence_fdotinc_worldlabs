@@ -1,0 +1,22 @@
+{
+  "name": "marble-hack",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "world": "node scripts/generate-world.mjs"
+  },
+  "dependencies": {
+    "@sparkjsdev/spark": "^2.1.0",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "vite": "^7.0.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": true
+  }
+}

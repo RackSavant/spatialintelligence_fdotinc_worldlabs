@@ -1,0 +1,7 @@
+interface:
+  display_name: "World Labs API"
+  short_description: "Build against the World Labs API"
+  default_prompt: "Use $marble-developer-api to integrate with the World Labs API."
+
+policy:
+  allow_implicit_invocation: true
