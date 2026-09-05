@@ -74,6 +74,24 @@ export function FurnitureDrawer({ selectedId, onSelect, onOpenChange }: Props) {
     if (!put.ok) throw new Error(`storage rejected ${name} (${put.status})`);
   }
 
+  async function seedFromRepo() {
+    setBusy("Loading bundled models…");
+    setNote(null);
+    try {
+      const res = await fetch("/api/assets/seed", { method: "POST" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "seed failed");
+      await refresh();
+      const parts = [`${json.added.length} bundled model${json.added.length === 1 ? "" : "s"} loaded`];
+      if (json.skipped?.length) parts.push(`${json.skipped.length} skipped`);
+      setNote(parts.join(" · "));
+    } catch (err) {
+      setNote((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function ingest(files: File[]) {
     let added = 0;
     const skipped: string[] = [];
@@ -176,9 +194,16 @@ export function FurnitureDrawer({ selectedId, onSelect, onOpenChange }: Props) {
           {note && <p className="mb-3 font-mono text-xs text-amber-300">{note}</p>}
 
           {assets.length === 0 ? (
-            <p className="py-6 text-center font-mono text-xs text-white/30">
-              No furniture yet.
-            </p>
+            <div className="py-6 text-center">
+              <p className="mb-3 font-mono text-xs text-white/30">No furniture yet.</p>
+              <button
+                onClick={seedFromRepo}
+                disabled={!!busy}
+                className="rounded border border-white/25 px-3 py-1.5 font-mono text-xs text-white hover:border-white/50 disabled:opacity-40"
+              >
+                load models bundled with the repo
+              </button>
+            </div>
           ) : (
             <div className="grid max-h-64 grid-cols-4 gap-2 overflow-y-auto">
               {assets.map((a) => {

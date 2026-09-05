@@ -27,6 +27,8 @@ export interface FpsControlsOptions {
   /** Collider mesh to stand on. Null means free-fly. */
   getFloor: () => THREE.Object3D | null;
   onLockChange?: (locked: boolean) => void;
+  /** Pointer lock was refused (usually Chrome's rate limit). */
+  onLockError?: () => void;
 }
 
 export class FpsControls {
@@ -34,6 +36,7 @@ export class FpsControls {
   private pitch = 0;
   private readonly keys = new Set<string>();
   private dragging = false;
+  private lastLockRequest = 0;
   private lastPointer: { x: number; y: number } | null = null;
   private readonly raycaster = new THREE.Raycaster();
   private readonly down = new THREE.Vector3(0, -1, 0);
@@ -63,7 +66,22 @@ export class FpsControls {
   }
 
   requestLock() {
-    this.opts.domElement.requestPointerLock?.();
+    // Chrome rate-limits pointer lock after an exit and rejects if asked again
+    // too soon. Unhandled, that rejection surfaces as a runtime error overlay.
+    const now = performance.now();
+    if (now - this.lastLockRequest < 1300) return;
+    this.lastLockRequest = now;
+    try {
+      const result = this.opts.domElement.requestPointerLock?.() as unknown;
+      if (result && typeof (result as Promise<void>).catch === "function") {
+        (result as Promise<void>).catch(() => {
+          // Drag-to-look still works, so a refusal is not fatal.
+          this.opts.onLockError?.();
+        });
+      }
+    } catch {
+      this.opts.onLockError?.();
+    }
   }
 
   private onLockChange = () => {

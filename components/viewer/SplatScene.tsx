@@ -10,6 +10,8 @@ import { FurnitureDrawer, type FurnitureAsset } from "./FurnitureDrawer";
 
 /** Standing eye height in metres; worlds are metric with the ground at y=0. */
 const EYE_HEIGHT = 1.6;
+/** How far above a crosshair hit to start the drop-to-floor probe, in metres. */
+const DROP_PROBE = 3;
 
 export interface SplatSceneProps {
   spzUrl: string;
@@ -25,6 +27,7 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
   const [locked, setLocked] = useState(false);
   const [warning, setWarning] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [lockHint, setLockHint] = useState(false);
   // A ref, not state: the scene effect must not tear down when the selection
   // changes, so the click handler reads the current value instead.
   const selectedAssetRef = useRef<FurnitureAsset | null>(null);
@@ -102,7 +105,11 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
       domElement: renderer.domElement,
       eyeHeight: EYE_HEIGHT,
       getFloor: () => collider,
-      onLockChange: setLocked,
+      onLockChange: (isLocked) => {
+        setLocked(isLocked);
+        if (isLocked) setLockHint(false);
+      },
+      onLockError: () => setLockHint(true),
     });
 
     // Placement raycasts the collider (clean geometry, stable normals) and
@@ -127,7 +134,30 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
       raycaster.intersectObject(collider ?? splats, true, hits);
       if (!hits.length) return;
 
-      const point = frame.worldGroup.worldToLocal(hits[0].point.clone());
+      // The crosshair decides where on the floor, never how high off it.
+      const worldPoint = hits[0].point.clone();
+
+      if (frame.hasMetricScale) {
+        // semantics_metadata puts the ground plane at y=0 by construction, so
+        // that is the floor — more trustworthy than the collider, which is a
+        // rough reconstruction with gaps and no surface under every point.
+        worldPoint.y = 0;
+      } else if (collider) {
+        // No ground plane to trust: drop to the lowest surface underneath.
+        const drop = new THREE.Raycaster(
+          new THREE.Vector3(worldPoint.x, worldPoint.y + DROP_PROBE, worldPoint.z),
+          new THREE.Vector3(0, -1, 0),
+        );
+        const below: THREE.Intersection[] = [];
+        drop.intersectObject(collider, true, below);
+        const floor = below.reduce<THREE.Intersection | null>(
+          (lowest, h) => (!lowest || h.point.y < lowest.point.y ? h : lowest),
+          null,
+        );
+        if (floor) worldPoint.y = floor.point.y;
+      }
+
+      const point = frame.worldGroup.worldToLocal(worldPoint);
       const asset = selectedAssetRef.current;
 
       const object = asset
@@ -139,16 +169,19 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
           );
 
       object.position.copy(point);
-      // Face the viewer, yaw only — a tipped-over sofa reads as a bug.
-      object.rotation.y = new THREE.Euler().setFromQuaternion(camera.quaternion, "YXZ").y;
+      // Turn to face the viewer, yaw only — a tipped-over sofa reads as a bug.
+      // +PI because the camera looks down -Z, so matching its yaw would point
+      // the model's back at you.
+      const camYaw = new THREE.Euler().setFromQuaternion(camera.quaternion, "YXZ").y;
+      object.rotation.y = camYaw + Math.PI;
       frame.worldGroup.add(object);
 
       // Models are authored with the origin anywhere; sit the base on the
-      // surface rather than trusting it to be at the model's feet.
-      object.updateMatrixWorld(true);
+      // surface rather than trusting it to be at the model's feet. Refresh the
+      // whole branch first or the bounds are computed from a stale matrix.
+      frame.worldGroup.updateMatrixWorld(true);
       const bounds = new THREE.Box3().setFromObject(object);
-      const localMinY = frame.worldGroup.worldToLocal(bounds.min.clone()).y;
-      object.position.y += point.y - localMinY;
+      object.position.y += point.y - bounds.min.y;
 
       placed.push(object);
     }
@@ -182,7 +215,10 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
     });
 
     if (process.env.NODE_ENV !== "production") {
-      Object.assign(window, { THREE, scene, camera, renderer, spark, splats, frame, controls });
+      Object.assign(window, {
+        THREE, scene, camera, renderer, spark, splats, frame, controls,
+        placeAtCrosshair, selectedAssetRef,
+      });
     }
 
     return () => {
@@ -227,7 +263,7 @@ export default function SplatScene({ spzUrl, colliderUrl, semantics }: SplatScen
       {ready && !locked && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center">
           <p className="rounded bg-black/70 px-4 py-2 font-mono text-sm text-white">
-            click to walk
+            {lockHint ? "wait a moment, then click again — or drag to look" : "click to walk"}
           </p>
         </div>
       )}
