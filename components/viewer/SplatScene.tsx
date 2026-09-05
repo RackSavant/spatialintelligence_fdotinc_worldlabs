@@ -30,6 +30,8 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
   const [warning, setWarning] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [lockHint, setLockHint] = useState(false);
+  const [holding, setHolding] = useState(false);
+  const [hovering, setHovering] = useState(false);
   // A ref, not state: the scene effect must not tear down when the selection
   // changes, so the click handler reads the current value instead.
   const selectedAssetRef = useRef<FurnitureAsset | null>(null);
@@ -292,22 +294,108 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
             new THREE.BoxGeometry(0.5, 0.5, 0.5),
             new THREE.MeshBasicMaterial({ color: 0x4ade80 }),
           );
+      object.userData.placed = true;
       frame.worldGroup.add(object);
       seat(object, target);
       placed.push(object);
     }
 
-    function undoPlacement() {
-      const last = placed.pop();
-      if (!last) return;
-      frame.worldGroup.remove(last);
-      last.traverse((child) => {
-        const mesh = child as THREE.Mesh;
+    function destroy(object: THREE.Object3D) {
+      frame.worldGroup.remove(object);
+      object.traverse((node) => {
+        const mesh = node as THREE.Mesh;
         mesh.geometry?.dispose();
         const mat = mesh.material;
         if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
         else mat?.dispose();
       });
+    }
+
+    function undoPlacement() {
+      const last = placed.pop();
+      if (last) destroy(last);
+    }
+
+    // --- grab and move -----------------------------------------------------
+
+    let held: THREE.Object3D | null = null;
+    /** Where a held piece came from, so cancelling puts it back. */
+    let heldRestore: { position: THREE.Vector3; rotationY: number } | null = null;
+
+    const highlight = new THREE.Box3Helper(new THREE.Box3(), 0x4ade80);
+    highlight.visible = false;
+    scene.add(highlight);
+
+    /** The placed piece under the crosshair, if any. */
+    function pickPlaced(): THREE.Object3D | null {
+      if (!placed.length) return null;
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+      const hits: THREE.Intersection[] = [];
+      raycaster.intersectObjects(placed, true, hits);
+      if (!hits.length) return null;
+      // Hits land on child meshes; walk up to the object we actually placed.
+      let node: THREE.Object3D | null = hits[0].object;
+      while (node && !node.userData.placed) node = node.parent;
+      return node;
+    }
+
+    function grab(object: THREE.Object3D) {
+      held = object;
+      heldRestore = { position: object.position.clone(), rotationY: object.rotation.y };
+      setHolding(true);
+      // A held piece must not block the raycast that decides where it lands.
+      object.traverse((n) => ((n as THREE.Mesh).raycast = () => {}));
+    }
+
+    function release(restore: boolean) {
+      if (!held) return;
+      if (restore && heldRestore) {
+        held.position.copy(heldRestore.position);
+        held.rotation.y = heldRestore.rotationY;
+      }
+      // Restore normal raycasting so it can be picked up again.
+      held.traverse((n) => {
+        const mesh = n as THREE.Mesh;
+        if (mesh.isMesh) delete (mesh as Partial<THREE.Mesh>).raycast;
+      });
+      held = null;
+      heldRestore = null;
+      setHolding(false);
+    }
+
+    function deleteHeld() {
+      if (!held) return;
+      const index = placed.indexOf(held);
+      if (index >= 0) placed.splice(index, 1);
+      destroy(held);
+      held = null;
+      heldRestore = null;
+      setHolding(false);
+    }
+
+    let lastInteractSync = 0;
+    function syncInteraction(now: number) {
+      if (held) {
+        highlight.visible = false;
+        const target = computeTarget();
+        if (target) {
+          // Follow the crosshair but keep the piece's own facing — picking
+          // something up shouldn't spin it round to look at you.
+          held.position.set(target.point.x, target.point.y + baseOffset(held), target.point.z);
+        }
+        return;
+      }
+      if (now - lastInteractSync < 60) return;
+      lastInteractSync = now;
+
+      const hovered = selectedAssetRef.current ? null : pickPlaced();
+      setHovering(!!hovered);
+      if (hovered) {
+        highlight.box.setFromObject(hovered);
+        highlight.visible = true;
+      } else {
+        highlight.visible = false;
+      }
     }
 
     function clearSelection() {
@@ -318,11 +406,24 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
 
     function onKey(e: KeyboardEvent) {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-      if (e.code === "KeyE") void placeAtCrosshair();
-      else if (e.code === "KeyQ") clearSelection();
-      else if (e.code === "KeyZ") undoPlacement();
-      else if (e.code === "KeyR") yawOffset += Math.PI / 8;
-      else return;
+      const step = e.shiftKey ? -Math.PI / 8 : Math.PI / 8;
+
+      if (e.code === "KeyR") {
+        if (held) held.rotation.y += step;
+        else yawOffset += step;
+      } else if (e.code === "KeyE") {
+        if (held) release(false);
+        else void placeAtCrosshair();
+      } else if (e.code === "KeyX" || e.code === "Delete" || e.code === "Backspace") {
+        deleteHeld();
+      } else if (e.code === "KeyZ") {
+        if (!held) undoPlacement();
+      } else if (e.code === "KeyQ" || e.code === "Escape") {
+        if (held) release(true);
+        else clearSelection();
+      } else {
+        return;
+      }
       e.preventDefault();
     }
     window.addEventListener("keydown", onKey);
@@ -333,16 +434,22 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
     const onPointerDown = (e: PointerEvent) => (pressAt = { x: e.clientX, y: e.clientY });
 
     function onClick(e: MouseEvent) {
-      const moved = pressAt
-        ? Math.hypot(e.clientX - pressAt.x, e.clientY - pressAt.y)
-        : 0;
+      const moved = pressAt ? Math.hypot(e.clientX - pressAt.x, e.clientY - pressAt.y) : 0;
       pressAt = null;
       if (moved > 5) return;
 
-      // Capture the mouse if we can — but placement must never depend on it.
-      // requestPointerLock only works from a user gesture and Chrome rate-limits
-      // it, so gating placement behind the lock made placing impossible.
+      // Capture the mouse if we can — but interaction must never depend on it.
       if (!controls.locked) controls.requestLock();
+
+      if (held) {
+        release(false); // drop where it stands
+        return;
+      }
+      const target = pickPlaced();
+      if (target && !selectedAssetRef.current) {
+        grab(target);
+        return;
+      }
       if (selectedAssetRef.current) void placeAtCrosshair();
     }
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
@@ -367,13 +474,15 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
       last = now;
       controls.update(dt);
       syncGhost(now);
+      syncInteraction(now);
       renderer.render(scene, camera);
     });
 
     if (process.env.NODE_ENV !== "production") {
       Object.assign(window, {
         THREE, scene, camera, renderer, spark, splats, frame, controls,
-        placeAtCrosshair, selectedAssetRef, computeTarget, syncGhost,
+        placeAtCrosshair, selectedAssetRef, computeTarget, syncGhost, syncInteraction,
+        pickPlaced, placedObjects: placed,
       });
     }
 
@@ -384,6 +493,8 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKey);
       removeGhosts();
+      scene.remove(highlight);
+      highlight.geometry.dispose();
       controls.dispose();
       controlsRef.current = null;
       observer.disconnect();
@@ -409,7 +520,7 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
     <div className="relative h-full w-full bg-black">
       <div ref={hostRef} className="h-full w-full [&>canvas]:block" />
 
-      {ready && (locked || selectedId) && (
+      {ready && (locked || selectedId || holding || hovering) && (
         <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
           <div className="h-4 w-px bg-white/70 absolute left-1/2 -translate-x-1/2 -top-2" />
           <div className="w-4 h-px bg-white/70 absolute top-1/2 -translate-y-1/2 -left-2" />
@@ -422,7 +533,7 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
         </div>
       )}
 
-      {ready && !locked && !selectedId && (
+      {ready && !locked && !selectedId && !holding && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center">
           <p className="rounded bg-black/70 px-4 py-2 font-mono text-sm text-white">
             {lockHint ? "wait a moment, then click again — or drag to look" : "click to walk"}
@@ -431,16 +542,20 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
       )}
 
       <div className="pointer-events-none absolute bottom-3 left-3 font-mono text-xs text-white/70 [text-shadow:0_1px_2px_#000]">
-        {selectedId
-          ? "placing · click or E to drop · R rotate · Z undo · Q to stop placing"
-          : locked
-            ? "walking · WASD move · shift sprint · esc to release"
-            : "click to capture the mouse · WASD to move · drag to look"}
+        {holding
+          ? "moving · click to drop · R rotate (shift+R reverse) · X delete · Q cancel"
+          : selectedId
+            ? "placing · click or E to drop · R rotate · Z undo · Q to stop placing"
+            : hovering
+              ? "click to pick this up · WASD to move"
+              : locked
+                ? "walking · WASD move · shift sprint · esc to release"
+                : "click to capture the mouse · WASD to move · drag to look"}
       </div>
 
-      {selectedId && (
+      {(selectedId || holding) && (
         <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded bg-green-400/90 px-3 py-1 font-mono text-xs text-black">
-          placing — Q to stop
+          {holding ? "moving — click to drop, Q to cancel" : "placing — Q to stop"}
         </div>
       )}
 
