@@ -23,6 +23,8 @@ export const jobStatus = pgEnum("job_status", [
 
 export const assetSource = pgEnum("asset_source", ["catalog", "generated"]);
 
+export const mediaKind = pgEnum("media_kind", ["image", "video"]);
+
 const id = () => uuid("id").primaryKey().defaultRandom();
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 
@@ -40,11 +42,13 @@ export const projects = pgTable("projects", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** Room captures: stills and walkthrough video both live here. */
 export const photos = pgTable("photos", {
   id: id(),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   r2Key: text("r2_key").notNull(),
   contentType: text("content_type").notNull(),
+  kind: mediaKind("kind").notNull().default("image"),
   width: integer("width"),
   height: integer("height"),
   bytes: integer("bytes"),
@@ -81,6 +85,8 @@ export const worlds = pgTable(
     sourceEditId: uuid("source_edit_id").references(() => edits.id, { onDelete: "set null" }),
     /** Generate straight from an unedited photo when no edit is chosen. */
     sourcePhotoId: uuid("source_photo_id").references(() => photos.id, { onDelete: "set null" }),
+    /** Text-to-world instead of image-to-world. Mutually exclusive with the above. */
+    textPrompt: text("text_prompt"),
 
     marbleWorldId: text("marble_world_id"),
     operationId: text("operation_id"),
@@ -153,6 +159,8 @@ export const jobs = pgTable(
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }),
     worldId: uuid("world_id").references(() => worlds.id, { onDelete: "cascade" }),
     progress: integer("progress"),
+    /** Human-readable status from the provider, e.g. "IN_PROGRESS — ...". */
+    detail: text("detail"),
     error: jsonb("error"),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

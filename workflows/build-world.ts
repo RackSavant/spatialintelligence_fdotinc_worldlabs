@@ -3,7 +3,7 @@ import { FatalError, RetryableError, sleep } from "workflow";
 import { db, schema } from "@/lib/db";
 import { requireKey } from "@/lib/env";
 import { marble, MarbleError } from "@/lib/marble/client";
-import type { MarbleModel, World } from "@/lib/marble/types";
+import type { MarbleModel, World, WorldPrompt } from "@/lib/marble/types";
 import { mirrorFromUrl } from "@/lib/storage";
 import { getBytes } from "@/lib/storage";
 
@@ -18,6 +18,30 @@ import { getBytes } from "@/lib/storage";
  */
 
 const POLL_BUDGET = 90;
+
+/**
+ * Marble reports progress as { status, description }, not a percentage, and the
+ * shape is not guaranteed. Anything non-numeric must never reach the integer
+ * column — a NaN write fails the step and strands a paid-for generation.
+ */
+function extractProgress(metadata: unknown): { percent: number | null; detail: string | null } {
+  const meta = (metadata ?? {}) as Record<string, unknown>;
+  const raw = meta.progress;
+
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return { percent: Math.round(raw), detail: null };
+  }
+  if (raw && typeof raw === "object") {
+    const { status, description } = raw as { status?: string; description?: string };
+    const detail = [status, description].filter(Boolean).join(" — ");
+    return { percent: null, detail: detail || null };
+  }
+  const pct = meta.progress_percent;
+  if (typeof pct === "number" && Number.isFinite(pct)) {
+    return { percent: Math.round(pct), detail: null };
+  }
+  return { percent: null, detail: null };
+}
 
 /** Marble's retry decision, mapped onto the workflow engine's. */
 function rethrowAsWorkflowError(err: unknown): never {
@@ -36,14 +60,26 @@ function rethrowAsWorkflowError(err: unknown): never {
   throw err;
 }
 
-interface SourceInfo {
-  storageKey: string;
-  contentType: string;
-  model: MarbleModel;
-  displayName: string;
+type SourceInfo =
+  | {
+      kind: "image" | "video";
+      storageKey: string;
+      contentType: string;
+      model: MarbleModel;
+      displayName: string;
+    }
+  | { kind: "text"; textPrompt: string; model: MarbleModel; displayName: string };
+
+interface LoadedSource {
+  source: SourceInfo;
+  /**
+   * Set when generation already started. Resuming past it is what stops a
+   * crash — or a bug in a later step — from re-billing a paid generation.
+   */
+  existingOperationId: string | null;
 }
 
-async function loadSource(worldId: string): Promise<SourceInfo> {
+async function loadSource(worldId: string): Promise<LoadedSource> {
   "use step";
 
   const [world] = await db.select().from(schema.worlds).where(eq(schema.worlds.id, worldId)).limit(1);
@@ -51,8 +87,22 @@ async function loadSource(worldId: string): Promise<SourceInfo> {
 
   await db
     .update(schema.worlds)
-    .set({ status: "running" })
+    .set({ status: "running", error: null })
     .where(eq(schema.worlds.id, worldId));
+
+  const existingOperationId = world.operationId;
+
+  if (world.textPrompt) {
+    return {
+      existingOperationId,
+      source: {
+        kind: "text",
+        textPrompt: world.textPrompt,
+        model: world.model as MarbleModel,
+        displayName: world.textPrompt.slice(0, 60),
+      },
+    };
+  }
 
   if (world.sourceEditId) {
     const [edit] = await db
@@ -62,10 +112,14 @@ async function loadSource(worldId: string): Promise<SourceInfo> {
       .limit(1);
     if (!edit) throw new FatalError(`source edit ${world.sourceEditId} not found`);
     return {
-      storageKey: edit.r2Key,
-      contentType: "image/png",
-      model: world.model as MarbleModel,
-      displayName: edit.prompt.slice(0, 60),
+      existingOperationId,
+      source: {
+        kind: "image",
+        storageKey: edit.r2Key,
+        contentType: "image/png",
+        model: world.model as MarbleModel,
+        displayName: edit.prompt.slice(0, 60),
+      },
     };
   }
 
@@ -77,23 +131,29 @@ async function loadSource(worldId: string): Promise<SourceInfo> {
       .limit(1);
     if (!photo) throw new FatalError(`source photo ${world.sourcePhotoId} not found`);
     return {
-      storageKey: photo.r2Key,
-      contentType: photo.contentType,
-      model: world.model as MarbleModel,
-      displayName: "Room photo",
+      existingOperationId,
+      source: {
+        kind: photo.kind,
+        storageKey: photo.r2Key,
+        contentType: photo.contentType,
+        model: world.model as MarbleModel,
+        displayName: photo.kind === "video" ? "Room walkthrough" : "Room photo",
+      },
     };
   }
 
-  throw new FatalError(`world ${worldId} has no source image`);
+  throw new FatalError(`world ${worldId} has no source image or text prompt`);
 }
 
-async function uploadSourceToMarble(source: SourceInfo): Promise<string> {
+async function uploadSourceToMarble(
+  source: Extract<SourceInfo, { kind: "image" | "video" }>,
+): Promise<string> {
   "use step";
   const apiKey = requireKey("WORLDLABS_API_KEY");
   const bytes = await getBytes(source.storageKey);
   const fileName = source.storageKey.split("/").pop() ?? "source.png";
   try {
-    return await marble(apiKey).uploadMedia(bytes, fileName, "image", source.contentType);
+    return await marble(apiKey).uploadMedia(bytes, fileName, source.kind, source.contentType);
   } catch (err) {
     rethrowAsWorkflowError(err);
   }
@@ -101,7 +161,7 @@ async function uploadSourceToMarble(source: SourceInfo): Promise<string> {
 
 async function startGeneration(
   worldId: string,
-  mediaAssetId: string,
+  worldPrompt: WorldPrompt,
   model: MarbleModel,
   displayName: string,
 ): Promise<string> {
@@ -114,10 +174,7 @@ async function startGeneration(
     const operation = await marble(apiKey).generateWorld({
       display_name: displayName,
       model,
-      world_prompt: {
-        type: "image",
-        image_prompt: { source: "media_asset", media_asset_id: mediaAssetId },
-      },
+      world_prompt: worldPrompt,
     });
 
     await db
@@ -149,17 +206,19 @@ async function pollOperation(worldId: string, operationId: string): Promise<Poll
     rethrowAsWorkflowError(err);
   }
 
-  const progress = operation.metadata?.progress ?? operation.metadata?.progress_percent ?? null;
-  if (progress != null) {
-    await db
-      .update(schema.jobs)
-      .set({ progress: Math.round(progress), updatedAt: new Date() })
-      .where(eq(schema.jobs.worldId, worldId));
-  }
+  const { percent, detail } = extractProgress(operation.metadata);
+  await db
+    .update(schema.jobs)
+    .set({
+      ...(percent != null ? { progress: percent } : {}),
+      ...(detail != null ? { detail } : {}),
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.jobs.worldId, worldId));
 
   return {
     done: Boolean(operation.done),
-    progress: progress != null ? Math.round(progress) : null,
+    progress: percent,
     errorMessage: operation.error ? JSON.stringify(operation.error) : null,
     world: operation.response ?? null,
   };
@@ -243,14 +302,27 @@ export async function buildWorld(worldId: string) {
   "use workflow";
 
   try {
-    const source = await loadSource(worldId);
-    const mediaAssetId = await uploadSourceToMarble(source);
-    const operationId = await startGeneration(
-      worldId,
-      mediaAssetId,
-      source.model,
-      source.displayName,
-    );
+    const { source, existingOperationId } = await loadSource(worldId);
+
+    // Never re-generate something already paid for; resume polling instead.
+    let operationId = existingOperationId;
+    if (!operationId) {
+      let worldPrompt: WorldPrompt;
+      if (source.kind === "text") {
+        worldPrompt = { type: "text", text_prompt: source.textPrompt };
+      } else {
+        const mediaAssetId = await uploadSourceToMarble(source);
+        worldPrompt =
+          source.kind === "video"
+            ? { type: "video", video_prompt: { source: "media_asset", media_asset_id: mediaAssetId } }
+            : {
+                type: "image",
+                image_prompt: { source: "media_asset", media_asset_id: mediaAssetId },
+              };
+      }
+
+      operationId = await startGeneration(worldId, worldPrompt, source.model, source.displayName);
+    }
 
     let result: PollResult | null = null;
     for (let attempt = 0; attempt < POLL_BUDGET; attempt++) {
