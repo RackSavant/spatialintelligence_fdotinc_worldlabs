@@ -13,6 +13,8 @@ export interface FurnitureAsset {
   bboxM: { x: number; y: number; z: number } | null;
   /** Model units -> metres. Normalised assets need this or everything is 1m. */
   scale: number;
+  /** Radians about X to stand a mis-authored model upright. */
+  rotationX: number;
 }
 
 interface Props {

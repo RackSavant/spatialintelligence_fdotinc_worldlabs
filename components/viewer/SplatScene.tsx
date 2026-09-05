@@ -212,6 +212,20 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
       return template.clone(true);
     }
 
+    /**
+     * Scale and upright correction live on an inner node so the outer object
+     * still owns yaw — otherwise rotating a flipped piece would spin it about
+     * the wrong axis.
+     */
+    async function instantiate(asset: FurnitureAsset): Promise<THREE.Object3D> {
+      const model = await loadModel(asset.url);
+      model.scale.setScalar(asset.scale || 1);
+      model.rotation.x = asset.rotationX || 0;
+      const wrapper = new THREE.Group();
+      wrapper.add(model);
+      return wrapper;
+    }
+
     /** Where the selected piece would land: on the floor under the crosshair. */
     function computeTarget(): { point: THREE.Vector3; yaw: number } | null {
       raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
@@ -318,9 +332,8 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
       ghostAssetId = asset?.id ?? null;
       if (!asset) return;
 
-      const preview = await loadModel(asset.url);
+      const preview = await instantiate(asset);
       if (token !== ghostToken) return; // selection moved on while loading
-      preview.scale.setScalar(asset.scale || 1);
       makeTranslucent(preview);
       preview.userData.isGhost = true;
       ghost = preview;
@@ -346,12 +359,11 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
       if (!target) return;
 
       const object = asset
-        ? await loadModel(asset.url)
+        ? await instantiate(asset)
         : new THREE.Mesh(
             new THREE.BoxGeometry(0.5, 0.5, 0.5),
             new THREE.MeshBasicMaterial({ color: 0x4ade80 }),
           );
-      if (asset) object.scale.setScalar(asset.scale || 1);
       object.userData.placed = true;
       frame.worldGroup.add(object);
       seat(object, target);

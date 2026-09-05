@@ -13,6 +13,26 @@ interface ManifestEntry {
   tags?: string[];
   /** Overrides the category default when the true height is known. */
   realHeightM?: number;
+  /** Explicit upright correction, in degrees about X. Wins over detection. */
+  rotationXDeg?: number;
+}
+
+const SEATING = new Set(["chair", "sofa", "stool", "seat", "bench", "lounge"]);
+
+/**
+ * Seating is wide at the seat and narrow at the backrest. If a model's top
+ * footprint dwarfs its bottom, it was authored upside down — which is what
+ * happened to the sled chair, whose thin backrest panel sat on the floor.
+ *
+ * Deliberately limited to seating: a bowl coffee table legitimately has a top
+ * far wider than its base, and would be flipped by this test.
+ */
+function uprightCorrection(entry: ManifestEntry, profile: { bottomArea: number; topArea: number } | null): number {
+  if (entry.rotationXDeg !== undefined) return (entry.rotationXDeg * Math.PI) / 180;
+  if (!profile || profile.bottomArea <= 0) return 0;
+  const isSeating = entry.tags?.some((t) => SEATING.has(t));
+  if (!isSeating) return 0;
+  return profile.topArea / profile.bottomArea > 2 ? Math.PI : 0;
 }
 
 /**
@@ -106,6 +126,7 @@ export async function POST() {
     await putBytes(key, bytes, "model/gltf-binary");
 
     const scale = realScale(entry, bounds.size!);
+    const rotationX = uprightCorrection(entry, bounds.profile);
     const sized = {
       x: +(bounds.size!.x * scale).toFixed(4),
       y: +(bounds.size!.y * scale).toFixed(4),
@@ -121,6 +142,7 @@ export async function POST() {
         r2Key: key,
         bboxM: sized,
         scale,
+        rotationX,
       })
       .returning();
 
@@ -128,6 +150,8 @@ export async function POST() {
       name: asset.name,
       modelUnits: bounds.size,
       scale: +scale.toFixed(3),
+      uprightFlip: rotationX !== 0,
+      profile: bounds.profile,
       bboxM: asset.bboxM,
       url: publicUrl(key),
     });

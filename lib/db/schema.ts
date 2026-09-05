@@ -134,6 +134,8 @@ export const assets = pgTable("assets", {
    * models to a unit box, which makes a chair and a table the same size.
    */
   scale: real("scale").notNull().default(1),
+  /** Radians about X to stand a mis-authored model upright. */
+  rotationX: real("rotation_x").notNull().default(0),
   createdAt: createdAt(),
 });
 
@@ -147,6 +149,8 @@ export const placements = pgTable(
     position: jsonb("position").$type<[number, number, number]>().notNull(),
     quaternion: jsonb("quaternion").$type<[number, number, number, number]>().notNull(),
     scale: real("scale").notNull().default(1),
+  /** Radians about X to stand a mis-authored model upright. */
+  rotationX: real("rotation_x").notNull().default(0),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
