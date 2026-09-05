@@ -11,6 +11,8 @@ export interface FurnitureAsset {
   category: string;
   url: string;
   bboxM: { x: number; y: number; z: number } | null;
+  /** Model units -> metres. Normalised assets need this or everything is 1m. */
+  scale: number;
 }
 
 interface Props {

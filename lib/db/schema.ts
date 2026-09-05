@@ -127,8 +127,13 @@ export const assets = pgTable("assets", {
   name: text("name").notNull(),
   category: text("category").notNull(),
   r2Key: text("r2_key").notNull(),
-  /** Real-world bounding box in metres — pairs with worlds.metricScaleFactor. */
+  /** Real-world bounding box in metres, after `scale` is applied. */
   bboxM: jsonb("bbox_m").$type<{ x: number; y: number; z: number }>(),
+  /**
+   * Multiplier from model units to metres. Asset pipelines routinely normalise
+   * models to a unit box, which makes a chair and a table the same size.
+   */
+  scale: real("scale").notNull().default(1),
   createdAt: createdAt(),
 });
 

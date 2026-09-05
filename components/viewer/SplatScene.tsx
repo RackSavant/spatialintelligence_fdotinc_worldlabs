@@ -252,10 +252,17 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
      */
     function baseOffset(object: THREE.Object3D): number {
       if (typeof object.userData.baseOffset === "number") return object.userData.baseOffset;
+      // Measure around the origin, then put the object back — this can be
+      // recomputed after a resize, long after the object has been positioned.
+      const position = object.position.clone();
+      const rotationY = object.rotation.y;
       object.position.set(0, 0, 0);
       object.rotation.set(0, 0, 0);
       object.updateMatrixWorld(true);
       const offset = -new THREE.Box3().setFromObject(object).min.y;
+      object.position.copy(position);
+      object.rotation.y = rotationY;
+      object.updateMatrixWorld(true);
       object.userData.baseOffset = offset;
       return offset;
     }
@@ -313,6 +320,7 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
 
       const preview = await loadModel(asset.url);
       if (token !== ghostToken) return; // selection moved on while loading
+      preview.scale.setScalar(asset.scale || 1);
       makeTranslucent(preview);
       preview.userData.isGhost = true;
       ghost = preview;
@@ -343,6 +351,7 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
             new THREE.BoxGeometry(0.5, 0.5, 0.5),
             new THREE.MeshBasicMaterial({ color: 0x4ade80 }),
           );
+      if (asset) object.scale.setScalar(asset.scale || 1);
       object.userData.placed = true;
       frame.worldGroup.add(object);
       seat(object, target);
@@ -465,6 +474,14 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
         else void placeAtCrosshair();
       } else if (e.code === "KeyX" || e.code === "Delete" || e.code === "Backspace") {
         deleteHeld();
+      } else if (e.code === "BracketRight" || e.code === "BracketLeft") {
+        if (held) {
+          held.scale.multiplyScalar(e.code === "BracketRight" ? 1.05 : 1 / 1.05);
+          // Scale moved the model's feet; the cached offset no longer holds.
+          delete held.userData.baseOffset;
+          const target = computeTarget();
+          if (target) held.position.y = target.point.y + baseOffset(held);
+        }
       } else if (e.code === "KeyZ") {
         if (!held) undoPlacement();
       } else if (e.code === "KeyQ" || e.code === "Escape") {
@@ -592,7 +609,7 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
 
       <div className="pointer-events-none absolute bottom-3 left-3 font-mono text-xs text-white/70 [text-shadow:0_1px_2px_#000]">
         {holding
-          ? "moving · click to drop · R rotate (shift+R reverse) · X delete · Q cancel"
+          ? "moving · click to drop · R rotate · [ ] resize · X delete · Q cancel"
           : selectedId
             ? "placing · click or E to drop · R rotate · Z undo · Q to stop placing"
             : hovering
