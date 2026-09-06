@@ -26,5 +26,19 @@
     "path": "assets/models/cream-bowl-coffee-table/cream-bowl-coffee-table.glb",
     "thumbnail": "",
     "tags": ["furniture", "table", "coffee"]
+  },
+  {
+    "id": "industrial-wood-bar-stool",
+    "name": "Industrial Wood Bar Stool",
+    "path": "assets/models/industrial-wood-bar-stool/industrial-wood-bar-stool.glb",
+    "thumbnail": "",
+    "tags": ["furniture", "stool", "industrial"]
+  },
+  {
+    "id": "beehive-ribbed-pendant-lamp",
+    "name": "Beehive Ribbed Pendant Lamp",
+    "path": "assets/models/beehive-ribbed-pendant-lamp/beehive-ribbed-pendant-lamp.glb",
+    "thumbnail": "",
+    "tags": ["furniture", "lamp", "lighting"]
   }
 ]
