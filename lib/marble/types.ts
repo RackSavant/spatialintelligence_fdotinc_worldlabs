@@ -63,7 +63,16 @@ export interface Operation<T> {
   operation_id: string;
   done: boolean;
   error?: OperationError | null;
-  metadata?: { progress?: number; progress_percent?: number } & Record<string, unknown>;
+  /**
+   * progress is an object in practice ({ status, description }), not a number.
+   * Typed loosely on purpose — see extractProgress in the workflow.
+   */
+  metadata?: {
+    progress?: { status?: string; description?: string } | number;
+    progress_percent?: number;
+    world_id?: string;
+    operation_type?: string;
+  } & Record<string, unknown>;
   response?: T | null;
   cost?: { line_items?: unknown } & Record<string, unknown>;
   created_at?: string;
@@ -104,6 +113,12 @@ export type WorldPrompt =
   | {
       type: "multi-image";
       multi_image_prompt: Array<{ source: "media_asset"; media_asset_id: string }>;
+      text_prompt?: string;
+    }
+  | {
+      /** Recommended: mp4, webm, mov, avi. Max 100MB. */
+      type: "video";
+      video_prompt: { source: "media_asset"; media_asset_id: string };
       text_prompt?: string;
     };
 

@@ -24,6 +24,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1127.0",
     "@sparkjsdev/spark": "^2.1.0",
     "drizzle-orm": "^0.45.2",
+    "fflate": "^0.8.3",
     "next": "^16.3.4",
     "postgres": "^3.4.9",
     "react": "^19.2.8",

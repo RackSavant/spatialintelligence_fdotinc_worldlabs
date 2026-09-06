@@ -17,12 +17,14 @@ export async function POST(request: Request) {
     projectId?: string;
     editId?: string;
     photoId?: string;
+    textPrompt?: string;
     model?: MarbleModel;
   };
 
-  if (!body.projectId || (!body.editId && !body.photoId)) {
+  const textPrompt = body.textPrompt?.trim();
+  if (!body.projectId || (!body.editId && !body.photoId && !textPrompt)) {
     return NextResponse.json(
-      { error: "projectId and one of editId or photoId are required" },
+      { error: "projectId and one of editId, photoId or textPrompt are required" },
       { status: 400 },
     );
   }
@@ -40,7 +42,9 @@ export async function POST(request: Request) {
   }
 
   const idempotencyKey = createHash("sha256")
-    .update([body.projectId, body.editId ?? body.photoId, model, PROMPT_VERSION].join("|"))
+    .update(
+      [body.projectId, body.editId ?? body.photoId ?? textPrompt, model, PROMPT_VERSION].join("|"),
+    )
     .digest("hex");
 
   /**
@@ -54,6 +58,7 @@ export async function POST(request: Request) {
       projectId: body.projectId,
       sourceEditId: body.editId ?? null,
       sourcePhotoId: body.editId ? null : (body.photoId ?? null),
+      textPrompt: !body.editId && !body.photoId ? (textPrompt ?? null) : null,
       model,
       idempotencyKey,
       status: "queued",

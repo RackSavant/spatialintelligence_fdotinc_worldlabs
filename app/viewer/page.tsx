@@ -23,6 +23,7 @@ export default async function ViewerPage({
 
   let spzUrl = typeof params.splat === "string" ? params.splat : SAMPLE_SPLAT;
   let colliderUrl = typeof params.collider === "string" ? params.collider : undefined;
+  let panoUrl = typeof params.pano === "string" ? params.pano : undefined;
   let semantics: WorldSemantics | undefined;
 
   if (worldId) {
@@ -36,6 +37,7 @@ export default async function ViewerPage({
       const key = pickVariant(world.spzKeys ?? {});
       if (key) spzUrl = publicUrl(key);
       if (world.colliderKey) colliderUrl = publicUrl(world.colliderKey);
+      if (world.panoKey) panoUrl = publicUrl(world.panoKey);
       semantics = {
         metricScaleFactor: world.metricScaleFactor,
         groundPlaneOffset: world.groundPlaneOffset,
@@ -45,7 +47,12 @@ export default async function ViewerPage({
 
   return (
     <main className="h-dvh w-full">
-      <SplatViewer spzUrl={spzUrl} colliderUrl={colliderUrl} semantics={semantics} />
+      <SplatViewer
+        spzUrl={spzUrl}
+        colliderUrl={colliderUrl}
+        panoUrl={panoUrl}
+        semantics={semantics}
+      />
     </main>
   );
 }

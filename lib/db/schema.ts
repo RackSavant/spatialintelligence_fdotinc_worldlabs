@@ -23,6 +23,11 @@ export const jobStatus = pgEnum("job_status", [
 
 export const assetSource = pgEnum("asset_source", ["catalog", "generated"]);
 
+export const mediaKind = pgEnum("media_kind", ["image", "video"]);
+
+/** Where a piece attaches: standing on the floor or hung from the ceiling. */
+export const mountKind = pgEnum("mount_kind", ["floor", "ceiling"]);
+
 const id = () => uuid("id").primaryKey().defaultRandom();
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 
@@ -40,11 +45,13 @@ export const projects = pgTable("projects", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** Room captures: stills and walkthrough video both live here. */
 export const photos = pgTable("photos", {
   id: id(),
   projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   r2Key: text("r2_key").notNull(),
   contentType: text("content_type").notNull(),
+  kind: mediaKind("kind").notNull().default("image"),
   width: integer("width"),
   height: integer("height"),
   bytes: integer("bytes"),
@@ -81,6 +88,8 @@ export const worlds = pgTable(
     sourceEditId: uuid("source_edit_id").references(() => edits.id, { onDelete: "set null" }),
     /** Generate straight from an unedited photo when no edit is chosen. */
     sourcePhotoId: uuid("source_photo_id").references(() => photos.id, { onDelete: "set null" }),
+    /** Text-to-world instead of image-to-world. Mutually exclusive with the above. */
+    textPrompt: text("text_prompt"),
 
     marbleWorldId: text("marble_world_id"),
     operationId: text("operation_id"),
@@ -121,8 +130,16 @@ export const assets = pgTable("assets", {
   name: text("name").notNull(),
   category: text("category").notNull(),
   r2Key: text("r2_key").notNull(),
-  /** Real-world bounding box in metres — pairs with worlds.metricScaleFactor. */
+  /** Real-world bounding box in metres, after `scale` is applied. */
   bboxM: jsonb("bbox_m").$type<{ x: number; y: number; z: number }>(),
+  /**
+   * Multiplier from model units to metres. Asset pipelines routinely normalise
+   * models to a unit box, which makes a chair and a table the same size.
+   */
+  scale: real("scale").notNull().default(1),
+  /** Radians about X to stand a mis-authored model upright. */
+  rotationX: real("rotation_x").notNull().default(0),
+  mount: mountKind("mount").notNull().default("floor"),
   createdAt: createdAt(),
 });
 
@@ -136,6 +153,9 @@ export const placements = pgTable(
     position: jsonb("position").$type<[number, number, number]>().notNull(),
     quaternion: jsonb("quaternion").$type<[number, number, number, number]>().notNull(),
     scale: real("scale").notNull().default(1),
+  /** Radians about X to stand a mis-authored model upright. */
+  rotationX: real("rotation_x").notNull().default(0),
+  mount: mountKind("mount").notNull().default("floor"),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -153,6 +173,8 @@ export const jobs = pgTable(
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }),
     worldId: uuid("world_id").references(() => worlds.id, { onDelete: "cascade" }),
     progress: integer("progress"),
+    /** Human-readable status from the provider, e.g. "IN_PROGRESS — ...". */
+    detail: text("detail"),
     error: jsonb("error"),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
