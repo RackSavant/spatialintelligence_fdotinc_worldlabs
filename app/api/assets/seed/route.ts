@@ -19,6 +19,17 @@ interface ManifestEntry {
 
 const SEATING = new Set(["chair", "sofa", "stool", "seat", "bench", "lounge"]);
 
+/** Words that mean the piece hangs rather than stands. */
+const CEILING_HINTS = ["pendant", "chandelier", "ceiling"];
+
+function haystack(entry: ManifestEntry): string {
+  return `${entry.id} ${entry.name} ${(entry.tags ?? []).join(" ")}`.toLowerCase();
+}
+
+function mountFor(entry: ManifestEntry): "floor" | "ceiling" {
+  return CEILING_HINTS.some((h) => haystack(entry).includes(h)) ? "ceiling" : "floor";
+}
+
 /**
  * Seating is wide at the seat and narrow at the backrest. If a model's top
  * footprint dwarfs its bottom, it was authored upside down — which is what
@@ -31,7 +42,7 @@ function uprightCorrection(entry: ManifestEntry, profile: { bottomArea: number; 
   if (entry.rotationXDeg !== undefined) return (entry.rotationXDeg * Math.PI) / 180;
   if (!profile || profile.bottomArea <= 0) return 0;
   const isSeating = entry.tags?.some((t) => SEATING.has(t));
-  if (!isSeating) return 0;
+  if (!isSeating || mountFor(entry) === "ceiling") return 0;
   return profile.topArea / profile.bottomArea > 2 ? Math.PI : 0;
 }
 
@@ -57,9 +68,18 @@ function looksNormalised(size: { x: number; y: number; z: number }): boolean {
   return Math.abs(largest - 1) < 0.02;
 }
 
+function targetHeight(entry: ManifestEntry): number | undefined {
+  if (entry.realHeightM !== undefined) return entry.realHeightM;
+  // A pendant's own height is the fixture, not the drop from the ceiling —
+  // the "lamp" default of 1.5m is a floor lamp and would be absurd hanging.
+  if (mountFor(entry) === "ceiling") return 0.4;
+  // Bar stools sit a good deal higher than the generic stool default.
+  if (haystack(entry).includes("bar") && entry.tags?.includes("stool")) return 0.75;
+  return entry.tags?.map((t) => HEIGHT_BY_TAG[t]).find((h) => h !== undefined);
+}
+
 function realScale(entry: ManifestEntry, size: { x: number; y: number; z: number }): number {
-  const target =
-    entry.realHeightM ?? entry.tags?.map((t) => HEIGHT_BY_TAG[t]).find((h) => h !== undefined);
+  const target = targetHeight(entry);
   if (!target || size.y <= 0) return 1;
   // Only correct models that were clearly normalised; leave true-scale ones be.
   if (!looksNormalised(size) && entry.realHeightM === undefined) return 1;
@@ -127,6 +147,7 @@ export async function POST() {
 
     const scale = realScale(entry, bounds.size!);
     const rotationX = uprightCorrection(entry, bounds.profile);
+    const mount = mountFor(entry);
     const sized = {
       x: +(bounds.size!.x * scale).toFixed(4),
       y: +(bounds.size!.y * scale).toFixed(4),
@@ -143,6 +164,7 @@ export async function POST() {
         bboxM: sized,
         scale,
         rotationX,
+        mount,
       })
       .returning();
 
@@ -151,6 +173,7 @@ export async function POST() {
       modelUnits: bounds.size,
       scale: +scale.toFixed(3),
       uprightFlip: rotationX !== 0,
+      mount,
       profile: bounds.profile,
       bboxM: asset.bboxM,
       url: publicUrl(key),

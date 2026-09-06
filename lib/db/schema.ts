@@ -25,6 +25,9 @@ export const assetSource = pgEnum("asset_source", ["catalog", "generated"]);
 
 export const mediaKind = pgEnum("media_kind", ["image", "video"]);
 
+/** Where a piece attaches: standing on the floor or hung from the ceiling. */
+export const mountKind = pgEnum("mount_kind", ["floor", "ceiling"]);
+
 const id = () => uuid("id").primaryKey().defaultRandom();
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 
@@ -136,6 +139,7 @@ export const assets = pgTable("assets", {
   scale: real("scale").notNull().default(1),
   /** Radians about X to stand a mis-authored model upright. */
   rotationX: real("rotation_x").notNull().default(0),
+  mount: mountKind("mount").notNull().default("floor"),
   createdAt: createdAt(),
 });
 
@@ -151,6 +155,7 @@ export const placements = pgTable(
     scale: real("scale").notNull().default(1),
   /** Radians about X to stand a mis-authored model upright. */
   rotationX: real("rotation_x").notNull().default(0),
+  mount: mountKind("mount").notNull().default("floor"),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

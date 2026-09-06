@@ -15,6 +15,8 @@ export interface FurnitureAsset {
   scale: number;
   /** Radians about X to stand a mis-authored model upright. */
   rotationX: number;
+  /** Standing on the floor, or hung from the ceiling. */
+  mount: "floor" | "ceiling";
 }
 
 interface Props {

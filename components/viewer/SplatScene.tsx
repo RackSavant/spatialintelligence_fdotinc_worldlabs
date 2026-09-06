@@ -13,6 +13,10 @@ import { Hotbar } from "./Hotbar";
 const EYE_HEIGHT = 1.6;
 /** How far above a crosshair hit to start the drop-to-floor probe, in metres. */
 const DROP_PROBE = 3;
+/** Used when the collider has no plausible ceiling above the chosen spot. */
+const DEFAULT_CEILING = 2.6;
+/** A hit outside this band isn't a ceiling — it's dome or far-field geometry. */
+const CEILING_RANGE: [number, number] = [1.9, 4.0];
 
 export interface SplatSceneProps {
   spzUrl: string;
@@ -222,6 +226,7 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
       model.scale.setScalar(asset.scale || 1);
       model.rotation.x = asset.rotationX || 0;
       const wrapper = new THREE.Group();
+      wrapper.userData.mount = asset.mount ?? "floor";
       wrapper.add(model);
       return wrapper;
     }
@@ -264,6 +269,20 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
      * per object: yaw doesn't change it, and recomputing a Box3 from geometry
      * every frame is what made the ghost preview stall the render loop.
      */
+    /** Ceiling height above a spot, from the collider, else a sane default. */
+    function ceilingAbove(x: number, z: number): number {
+      if (!collider) return DEFAULT_CEILING;
+      const up = new THREE.Raycaster(new THREE.Vector3(x, 0.2, z), new THREE.Vector3(0, 1, 0));
+      const hits: THREE.Intersection[] = [];
+      up.intersectObject(collider, true, hits);
+      // Ignore furniture below and the panoramic dome above: a Marble collider
+      // spans ~24m, so an unbounded search finds sky, not a ceiling.
+      const above = hits
+        .map((h) => h.point.y)
+        .filter((y) => y >= CEILING_RANGE[0] && y <= CEILING_RANGE[1]);
+      return above.length ? Math.min(...above) : DEFAULT_CEILING;
+    }
+
     function baseOffset(object: THREE.Object3D): number {
       if (typeof object.userData.baseOffset === "number") return object.userData.baseOffset;
       // Measure around the origin, then put the object back — this can be
@@ -273,7 +292,9 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
       object.position.set(0, 0, 0);
       object.rotation.set(0, 0, 0);
       object.updateMatrixWorld(true);
-      const offset = -new THREE.Box3().setFromObject(object).min.y;
+      const box = new THREE.Box3().setFromObject(object);
+      const offset = -box.min.y;
+      object.userData.topOffset = -box.max.y;
       object.position.copy(position);
       object.rotation.y = rotationY;
       object.updateMatrixWorld(true);
@@ -281,10 +302,18 @@ export default function SplatScene({ spzUrl, colliderUrl, panoUrl, semantics }: 
       return offset;
     }
 
-    /** Sit the model's base on the target rather than trusting its origin. */
+    /**
+     * Sit the model's base on the target rather than trusting its origin — or,
+     * for a hanging fixture, put its top against the ceiling instead.
+     */
     function seat(object: THREE.Object3D, target: { point: THREE.Vector3; yaw: number }) {
-      const offset = baseOffset(object);
-      object.position.set(target.point.x, target.point.y + offset, target.point.z);
+      const offset = baseOffset(object); // also fills userData.topOffset
+      if (object.userData.mount === "ceiling") {
+        const ceiling = ceilingAbove(target.point.x, target.point.z);
+        object.position.set(target.point.x, ceiling + object.userData.topOffset, target.point.z);
+      } else {
+        object.position.set(target.point.x, target.point.y + offset, target.point.z);
+      }
       object.rotation.y = target.yaw;
     }
 
